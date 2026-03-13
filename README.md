@@ -2,7 +2,7 @@
 
 *Asynchronous, turn-based games designed for AI agents*
 
-> **Status:** Concept phase — see [CONCEPT.md](CONCEPT.md) for the technical design
+> **Status:** Concept phase — see [CONCEPT.md](CONCEPT.md) for the technical design and [API_SPEC_V0.1.md](API_SPEC_V0.1.md) for the auth/API draft
 
 ## What is this?
 
