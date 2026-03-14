@@ -2,23 +2,31 @@
   "name": "agent-arena",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "description": "Async turn-based game platform for AI agents",
+  "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
-    "@fastify/cors": "^11.0.0",
-    "fastify": "^5.6.0",
-    "sql.js": "^1.13.0",
-    "zod": "^3.24.1"
+    "better-sqlite3": "^11.10.0",
+    "express": "^5.1.0",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/node": "^22.13.5",
-    "@types/sql.js": "^1.4.9",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.14",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.1.0",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
   }
 }

@@ -1,47 +1,32 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
-import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+import Database from "better-sqlite3";
+import { hashInviteCode } from "./auth/api-keys.js";
 
-const DB_PATH = process.env.DB_PATH ?? path.resolve(process.cwd(), "data", "agent-arena.sqlite");
-
-let SQL: SqlJsStatic | null = null;
-let db: Database | null = null;
-
-async function getSql() {
-  if (SQL) return SQL;
-  const thisDir = path.dirname(fileURLToPath(import.meta.url));
-  SQL = await initSqlJs({
-    locateFile: (file: string) =>
-      path.resolve(thisDir, "..", "node_modules", "sql.js", "dist", file),
-  });
-  return SQL;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-export async function getDb() {
-  if (db) return db;
-  const sql = await getSql();
-  await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
-  try {
-    const file = await fs.readFile(DB_PATH);
-    db = new sql.Database(new Uint8Array(file));
-  } catch {
-    db = new sql.Database();
+export function createDatabase(databasePath: string, inviteCodes: string[]) {
+  if (databasePath !== ":memory:") {
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   }
+
+  const db = new Database(databasePath);
+  if (databasePath !== ":memory:") {
+    db.pragma("journal_mode = WAL");
+  }
+  db.pragma("foreign_keys = ON");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,
       webhook_url TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+      key_id TEXT NOT NULL UNIQUE,
       api_key_hash TEXT NOT NULL,
       scopes_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -50,34 +35,22 @@ export async function getDb() {
       single_use INTEGER NOT NULL DEFAULT 1,
       used_by_agent_id TEXT,
       expires_at TEXT,
-      created_at TEXT NOT NULL,
-      used_at TEXT
+      created_at TEXT NOT NULL
     );
   `);
 
-  seedInviteCodes(db);
-  await persistDb();
-  return db;
-}
+  const insertInvite = db.prepare(`
+    INSERT OR IGNORE INTO invite_codes (code_hash, single_use, used_by_agent_id, expires_at, created_at)
+    VALUES (@code_hash, 1, NULL, NULL, @created_at)
+  `);
 
-function seedInviteCodes(database: Database) {
-  const rawCodes = (process.env.INVITE_CODES ?? "DEV_INVITE").split(",").map((v) => v.trim()).filter(Boolean);
-  const now = nowIso();
-  for (const code of rawCodes) {
-    const codeHash = hashSha256(code);
-    database.run(
-      `INSERT OR IGNORE INTO invite_codes (code_hash, single_use, created_at) VALUES (?, 1, ?);`,
-      [codeHash, now],
-    );
+  const now = new Date().toISOString();
+  for (const code of inviteCodes) {
+    insertInvite.run({
+      code_hash: hashInviteCode(code),
+      created_at: now,
+    });
   }
-}
 
-export async function persistDb() {
-  if (!db) return;
-  const data = Buffer.from(db.export());
-  await fs.writeFile(DB_PATH, data);
-}
-
-export function hashSha256(value: string) {
-  return createHash("sha256").update(value).digest("hex");
+  return db;
 }
