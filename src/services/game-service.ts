@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { AppError } from "../errors.js";
+import { recordGameEvent } from "./game-events.js";
 
 export const SUPPORTED_GAME_TYPES = ["auction_house"] as const;
 export type GameType = (typeof SUPPORTED_GAME_TYPES)[number];
@@ -16,6 +17,7 @@ type GameRow = {
   id: string;
   game_type: string;
   status: string;
+  revision: number;
   settings_json: string;
   created_by: string;
   created_at: string;
@@ -38,8 +40,8 @@ export class GameService {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO games (id, game_type, status, settings_json, created_by, created_at)
-           VALUES (@id, @game_type, 'waiting', @settings_json, @created_by, @created_at)`,
+          `INSERT INTO games (id, game_type, status, revision, settings_json, created_by, created_at)
+           VALUES (@id, @game_type, 'waiting', 0, @settings_json, @created_by, @created_at)`,
         )
         .run({
           id: gameId,
@@ -60,6 +62,19 @@ export class GameService {
           player_slot: "player_1",
           joined_at: now,
         });
+
+      recordGameEvent(this.db, {
+        gameId,
+        revision: 0,
+        eventType: "game_created",
+        actorAgentId: input.agentId,
+        payload: {
+          game_type: input.gameType,
+          status: "waiting",
+          player_slot: "player_1",
+        },
+        createdAt: now,
+      });
     });
 
     tx();
@@ -70,7 +85,7 @@ export class GameService {
   getGame(gameId: string) {
     const game = this.db
       .prepare(
-        `SELECT id, game_type, status, settings_json, created_by, created_at, started_at
+        `SELECT id, game_type, status, revision, settings_json, created_by, created_at, started_at
          FROM games WHERE id = ?`,
       )
       .get(gameId) as GameRow | undefined;
@@ -93,6 +108,7 @@ export class GameService {
       game_id: game.id,
       game_type: game.game_type,
       status: game.status as GameStatus,
+      revision: game.revision,
       settings,
       players: players.map((p) => ({
         agent_id: p.agent_id,
@@ -109,8 +125,8 @@ export class GameService {
     const tx = this.db.transaction(() => {
       // All checks inside transaction to prevent race conditions
       const game = this.db
-        .prepare(`SELECT id, status, settings_json FROM games WHERE id = ?`)
-        .get(gameId) as { id: string; status: string; settings_json: string } | undefined;
+        .prepare(`SELECT id, status, revision, settings_json FROM games WHERE id = ?`)
+        .get(gameId) as { id: string; status: string; revision: number; settings_json: string } | undefined;
 
       if (!game) {
         throw new AppError(404, "game_not_found", "Game not found");
@@ -141,6 +157,7 @@ export class GameService {
       const playerSlot = `player_${count + 1}`;
       const now = new Date().toISOString();
       const isFull = count + 1 >= settings.max_players;
+      const nextRevision = game.revision + 1;
 
       this.db
         .prepare(
@@ -149,10 +166,34 @@ export class GameService {
         )
         .run({ game_id: gameId, agent_id: agentId, player_slot: playerSlot, joined_at: now });
 
+      this.db
+        .prepare(`UPDATE games SET status = ?, started_at = ?, revision = ? WHERE id = ?`)
+        .run(isFull ? "active" : "waiting", isFull ? now : null, nextRevision, gameId);
+
+      recordGameEvent(this.db, {
+        gameId,
+        revision: nextRevision,
+        eventType: "player_joined",
+        actorAgentId: agentId,
+        payload: {
+          player_slot: playerSlot,
+          status: isFull ? "active" : "waiting",
+        },
+        createdAt: now,
+      });
+
       if (isFull) {
-        this.db
-          .prepare(`UPDATE games SET status = 'active', started_at = ? WHERE id = ?`)
-          .run(now, gameId);
+        recordGameEvent(this.db, {
+          gameId,
+          revision: nextRevision,
+          eventType: "game_activated",
+          actorAgentId: agentId,
+          payload: {
+            started_at: now,
+            player_count: count + 1,
+          },
+          createdAt: now,
+        });
       }
 
       return {

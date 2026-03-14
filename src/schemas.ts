@@ -23,3 +23,11 @@ export const createGameSchema = z.object({
 export const gameIdParamsSchema = z.object({
   id: z.string().regex(/^gam_[a-z0-9]+$/),
 });
+
+export const submitMoveSchema = z.object({
+  expected_revision: z.number().int().min(0),
+  move_schema_version: z.literal(1),
+  action: z.string().trim().min(1).max(64),
+  params: z.record(z.string(), z.unknown()).default({}),
+  reasoning: z.string().trim().max(4000).optional(),
+});

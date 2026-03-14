@@ -4,15 +4,23 @@ import { createDatabase } from "./db.js";
 import { AppError, errorEnvelope } from "./errors.js";
 import { requestContext } from "./middleware/request-context.js";
 import { requireAuth, requireScopes } from "./middleware/auth.js";
-import { registerAgentSchema, agentIdParamsSchema, createGameSchema, gameIdParamsSchema } from "./schemas.js";
+import {
+  registerAgentSchema,
+  agentIdParamsSchema,
+  createGameSchema,
+  gameIdParamsSchema,
+  submitMoveSchema,
+} from "./schemas.js";
 import { AgentService } from "./services/agent-service.js";
 import { GameService } from "./services/game-service.js";
+import { MoveService } from "./services/move-service.js";
 import { validateBody, validateParams } from "./validation.js";
 
 export type AppContext = {
   config: AppConfig;
   agentService: AgentService;
   gameService: GameService;
+  moveService: MoveService;
   close: () => void;
 };
 
@@ -24,6 +32,7 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
   const db = createDatabase(config.databasePath, config.inviteCodes);
   const agentService = new AgentService(db);
   const gameService = new GameService(db);
+  const moveService = new MoveService(db);
   const app = express();
 
   app.disable("x-powered-by");
@@ -49,7 +58,7 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
   });
 
   app.get("/agents/me", requireAuth(agentService), requireScopes(["agents:read"]), async (req, res) => {
-    res.status(200).json(agentService.getAgent(req.auth!.agentId));
+    res.status(200).json(agentService.getAgent(getAuthenticatedAgentId(req)));
   });
 
   app.post(
@@ -58,7 +67,7 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     requireScopes(["agents:rotate-key"]),
     validateParams(agentIdParamsSchema),
     async (req, res) => {
-      if (req.auth!.agentId !== req.params.id) {
+      if (getAuthenticatedAgentId(req) !== req.params.id) {
         throw new AppError(403, "forbidden", "Agents can only rotate their own key");
       }
 
@@ -69,7 +78,7 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
 
   app.post("/games", requireAuth(agentService), requireScopes(["games:join"]), validateBody(createGameSchema), async (req, res) => {
     const result = gameService.createGame({
-      agentId: req.auth!.agentId,
+      agentId: getAuthenticatedAgentId(req),
       gameType: req.body.game_type,
       settings: req.body.settings,
     });
@@ -87,7 +96,17 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     requireScopes(["games:read"]),
     validateParams(gameIdParamsSchema),
     async (req, res) => {
-      res.status(200).json(gameService.getGame(req.params.id));
+      res.status(200).json(gameService.getGame(getGameIdParam(req)));
+    },
+  );
+
+  app.get(
+    "/games/:id/state",
+    requireAuth(agentService),
+    requireScopes(["games:read"]),
+    validateParams(gameIdParamsSchema),
+    async (req, res) => {
+      res.status(200).json(moveService.getState(getGameIdParam(req), getAuthenticatedAgentId(req)));
     },
   );
 
@@ -97,11 +116,44 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     requireScopes(["games:join"]),
     validateParams(gameIdParamsSchema),
     async (req, res) => {
-      const result = gameService.joinGame(req.params.id, req.auth!.agentId);
+      const result = gameService.joinGame(getGameIdParam(req), getAuthenticatedAgentId(req));
       res.status(200).json({
         game_id: result.gameId,
         player_slot: result.playerSlot,
         status: result.status,
+      });
+    },
+  );
+
+  app.post(
+    "/games/:id/moves",
+    requireAuth(agentService),
+    requireScopes(["moves:write"]),
+    validateParams(gameIdParamsSchema),
+    validateBody(submitMoveSchema),
+    async (req, res) => {
+      const idempotencyKey = req.header("idempotency-key")?.trim();
+
+      if (!idempotencyKey) {
+        throw new AppError(400, "missing_idempotency_key", "Idempotency-Key header is required");
+      }
+
+      const result = moveService.submitMove({
+        gameId: getGameIdParam(req),
+        agentId: getAuthenticatedAgentId(req),
+        idempotencyKey,
+        expectedRevision: req.body.expected_revision,
+        moveSchemaVersion: req.body.move_schema_version,
+        action: req.body.action,
+        params: req.body.params,
+        reasoning: req.body.reasoning,
+      });
+
+      res.status(result.idempotentReplay ? 200 : 202).json({
+        accepted: result.accepted,
+        move_id: result.moveId,
+        applied_revision: result.appliedRevision,
+        idempotent_replay: result.idempotentReplay,
       });
     },
   );
@@ -137,8 +189,23 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     config,
     agentService,
     gameService,
+    moveService,
     close: () => db.close(),
   };
 
   return { app, context };
+}
+
+function getAuthenticatedAgentId(req: express.Request) {
+  const agentId = req.auth?.agentId;
+
+  if (!agentId) {
+    throw new AppError(401, "missing_authorization", "Bearer token is required");
+  }
+
+  return agentId;
+}
+
+function getGameIdParam(req: express.Request) {
+  return Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 }
