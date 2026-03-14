@@ -295,7 +295,10 @@ describe("Agent Arena API", () => {
           expected_revision: 1,
           move_schema_version: 1,
           action: "bid",
-          params: { amount: 200 },
+          params: {
+            amount: 200,
+            meta: { tags: ["fast", "safe"], priority: 1 },
+          },
         });
 
       expect(firstMove.status).toBe(202);
@@ -311,7 +314,10 @@ describe("Agent Arena API", () => {
           expected_revision: 1,
           move_schema_version: 1,
           action: "bid",
-          params: { amount: 200 },
+          params: {
+            meta: { priority: 1, tags: ["fast", "safe"] },
+            amount: 200,
+          },
         });
 
       expect(replayMove.status).toBe(200);

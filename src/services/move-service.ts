@@ -75,7 +75,7 @@ export class MoveService {
   }
 
   submitMove(input: SubmitMoveInput) {
-    const paramsJson = JSON.stringify(input.params);
+    const paramsJson = canonicalizeJson(input.params);
 
     const tx = this.db.transaction(() => {
       const game = this.getGame(input.gameId);
@@ -209,4 +209,21 @@ export class MoveService {
       )
       .all(gameId) as PlayerRow[];
   }
+}
+
+function canonicalizeJson(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortJsonValue(entry));
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
+    return Object.fromEntries(entries.map(([key, entry]) => [key, sortJsonValue(entry)]));
+  }
+
+  return value;
 }
