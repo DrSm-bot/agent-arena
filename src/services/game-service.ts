@@ -106,41 +106,42 @@ export class GameService {
   }
 
   joinGame(gameId: string, agentId: string) {
-    const game = this.db
-      .prepare(`SELECT id, status, settings_json FROM games WHERE id = ?`)
-      .get(gameId) as { id: string; status: string; settings_json: string } | undefined;
-
-    if (!game) {
-      throw new AppError(404, "game_not_found", "Game not found");
-    }
-
-    if (game.status !== "waiting") {
-      throw new AppError(409, "game_not_joinable", `Game is not accepting players (status: ${game.status})`);
-    }
-
-    const alreadyJoined = this.db
-      .prepare(`SELECT agent_id FROM game_players WHERE game_id = ? AND agent_id = ?`)
-      .get(gameId, agentId) as { agent_id: string } | undefined;
-
-    if (alreadyJoined) {
-      throw new AppError(409, "already_joined", "Agent has already joined this game");
-    }
-
-    const { count } = this.db
-      .prepare(`SELECT COUNT(*) as count FROM game_players WHERE game_id = ?`)
-      .get(gameId) as { count: number };
-
-    const settings = JSON.parse(game.settings_json) as GameSettings;
-
-    if (count >= settings.max_players) {
-      throw new AppError(409, "game_full", "Game is full");
-    }
-
-    const playerSlot = `player_${count + 1}`;
-    const now = new Date().toISOString();
-    const isFull = count + 1 >= settings.max_players;
-
     const tx = this.db.transaction(() => {
+      // All checks inside transaction to prevent race conditions
+      const game = this.db
+        .prepare(`SELECT id, status, settings_json FROM games WHERE id = ?`)
+        .get(gameId) as { id: string; status: string; settings_json: string } | undefined;
+
+      if (!game) {
+        throw new AppError(404, "game_not_found", "Game not found");
+      }
+
+      if (game.status !== "waiting") {
+        throw new AppError(409, "game_not_joinable", `Game is not accepting players (status: ${game.status})`);
+      }
+
+      const alreadyJoined = this.db
+        .prepare(`SELECT agent_id FROM game_players WHERE game_id = ? AND agent_id = ?`)
+        .get(gameId, agentId) as { agent_id: string } | undefined;
+
+      if (alreadyJoined) {
+        throw new AppError(409, "already_joined", "Agent has already joined this game");
+      }
+
+      const { count } = this.db
+        .prepare(`SELECT COUNT(*) as count FROM game_players WHERE game_id = ?`)
+        .get(gameId) as { count: number };
+
+      const settings = JSON.parse(game.settings_json) as GameSettings;
+
+      if (count >= settings.max_players) {
+        throw new AppError(409, "game_full", "Game is full");
+      }
+
+      const playerSlot = `player_${count + 1}`;
+      const now = new Date().toISOString();
+      const isFull = count + 1 >= settings.max_players;
+
       this.db
         .prepare(
           `INSERT INTO game_players (game_id, agent_id, player_slot, joined_at)
@@ -153,14 +154,14 @@ export class GameService {
           .prepare(`UPDATE games SET status = 'active', started_at = ? WHERE id = ?`)
           .run(now, gameId);
       }
+
+      return {
+        gameId,
+        playerSlot,
+        status: (isFull ? "active" : "waiting") as GameStatus,
+      };
     });
 
-    tx();
-
-    return {
-      gameId,
-      playerSlot,
-      status: (isFull ? "active" : "waiting") as GameStatus,
-    };
+    return tx();
   }
 }
