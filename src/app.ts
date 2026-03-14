@@ -31,30 +31,22 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     res.status(200).json({ status: "ok" });
   });
 
-  app.post("/agents", validateBody(registerAgentSchema), (req, res, next) => {
-    try {
-      const result = agentService.createAgent({
-        displayName: req.body.display_name,
-        webhookUrl: req.body.webhook_url,
-        inviteCode: req.body.invite_code,
-      });
+  app.post("/agents", validateBody(registerAgentSchema), async (req, res) => {
+    const result = agentService.createAgent({
+      displayName: req.body.display_name,
+      webhookUrl: req.body.webhook_url,
+      inviteCode: req.body.invite_code,
+    });
 
-      res.status(201).json({
-        agent_id: result.agentId,
-        api_key: result.apiKey,
-        scopes: result.scopes,
-      });
-    } catch (error) {
-      next(error);
-    }
+    res.status(201).json({
+      agent_id: result.agentId,
+      api_key: result.apiKey,
+      scopes: result.scopes,
+    });
   });
 
-  app.get("/agents/me", requireAuth(agentService), requireScopes(["agents:read"]), (req, res, next) => {
-    try {
-      res.status(200).json(agentService.getAgent(req.auth!.agentId));
-    } catch (error) {
-      next(error);
-    }
+  app.get("/agents/me", requireAuth(agentService), requireScopes(["agents:read"]), async (req, res) => {
+    res.status(200).json(agentService.getAgent(req.auth!.agentId));
   });
 
   app.post(
@@ -62,17 +54,13 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     requireAuth(agentService),
     requireScopes(["agents:rotate-key"]),
     validateParams(agentIdParamsSchema),
-    (req, res, next) => {
-      try {
-        if (req.auth!.agentId !== req.params.id) {
-          throw new AppError(403, "forbidden", "Agents can only rotate their own key");
-        }
-
-        const result = agentService.rotateKey(req.params.id);
-        res.status(200).json({ api_key: result.apiKey });
-      } catch (error) {
-        next(error);
+    async (req, res) => {
+      if (req.auth!.agentId !== req.params.id) {
+        throw new AppError(403, "forbidden", "Agents can only rotate their own key");
       }
+
+      const result = agentService.rotateKey(req.params.id);
+      res.status(200).json({ api_key: result.apiKey });
     },
   );
 
