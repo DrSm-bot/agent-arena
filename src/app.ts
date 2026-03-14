@@ -4,13 +4,15 @@ import { createDatabase } from "./db.js";
 import { AppError, errorEnvelope } from "./errors.js";
 import { requestContext } from "./middleware/request-context.js";
 import { requireAuth, requireScopes } from "./middleware/auth.js";
-import { registerAgentSchema, agentIdParamsSchema } from "./schemas.js";
+import { registerAgentSchema, agentIdParamsSchema, createGameSchema, gameIdParamsSchema } from "./schemas.js";
 import { AgentService } from "./services/agent-service.js";
+import { GameService } from "./services/game-service.js";
 import { validateBody, validateParams } from "./validation.js";
 
 export type AppContext = {
   config: AppConfig;
   agentService: AgentService;
+  gameService: GameService;
   close: () => void;
 };
 
@@ -21,6 +23,7 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
   };
   const db = createDatabase(config.databasePath, config.inviteCodes);
   const agentService = new AgentService(db);
+  const gameService = new GameService(db);
   const app = express();
 
   app.disable("x-powered-by");
@@ -64,6 +67,45 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
     },
   );
 
+  app.post("/games", requireAuth(agentService), requireScopes(["games:join"]), validateBody(createGameSchema), async (req, res) => {
+    const result = gameService.createGame({
+      agentId: req.auth!.agentId,
+      gameType: req.body.game_type,
+      settings: req.body.settings,
+    });
+
+    res.status(201).json({
+      game_id: result.gameId,
+      status: result.status,
+      player_slot: result.playerSlot,
+    });
+  });
+
+  app.get(
+    "/games/:id",
+    requireAuth(agentService),
+    requireScopes(["games:read"]),
+    validateParams(gameIdParamsSchema),
+    async (req, res) => {
+      res.status(200).json(gameService.getGame(req.params.id));
+    },
+  );
+
+  app.post(
+    "/games/:id/join",
+    requireAuth(agentService),
+    requireScopes(["games:join"]),
+    validateParams(gameIdParamsSchema),
+    async (req, res) => {
+      const result = gameService.joinGame(req.params.id, req.auth!.agentId);
+      res.status(200).json({
+        game_id: result.gameId,
+        player_slot: result.playerSlot,
+        status: result.status,
+      });
+    },
+  );
+
   app.use((req, _res, next) => {
     next(new AppError(404, "not_found", "Route not found", { path: req.originalUrl }));
   });
@@ -94,6 +136,7 @@ export function createApp(overrides: Partial<AppConfig> = {}) {
   const context: AppContext = {
     config,
     agentService,
+    gameService,
     close: () => db.close(),
   };
 

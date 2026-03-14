@@ -93,6 +93,137 @@ describe("Agent Arena API", () => {
     expect(response.body.error.code).toBe("insufficient_scope");
   });
 
+  describe("Game lifecycle", () => {
+    async function buildAgentWithKey(app: ReturnType<typeof buildTestApp>["app"], inviteCode: string) {
+      const res = await request(app).post("/agents").send({ display_name: "TestAgent", invite_code: inviteCode });
+      return { agentId: res.body.agent_id as string, apiKey: res.body.api_key as string };
+    }
+
+    it("creates a game and creator becomes player_1", async () => {
+      const { app } = buildTestApp();
+      const { apiKey } = await buildAgentWithKey(app, "valid-invite");
+
+      const res = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      expect(res.status).toBe(201);
+      expect(res.body.game_id).toMatch(/^gam_/);
+      expect(res.body.status).toBe("waiting");
+      expect(res.body.player_slot).toBe("player_1");
+    });
+
+    it("GET /games/:id returns game state with player list", async () => {
+      const { app } = buildTestApp();
+      const { apiKey, agentId } = await buildAgentWithKey(app, "valid-invite");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+      const stateRes = await request(app)
+        .get(`/games/${gameId}`)
+        .set("Authorization", `Bearer ${apiKey}`);
+
+      expect(stateRes.status).toBe(200);
+      expect(stateRes.body.game_id).toBe(gameId);
+      expect(stateRes.body.status).toBe("waiting");
+      expect(stateRes.body.game_type).toBe("auction_house");
+      expect(stateRes.body.players).toHaveLength(1);
+      expect(stateRes.body.players[0].agent_id).toBe(agentId);
+      expect(stateRes.body.players[0].player_slot).toBe("player_1");
+    });
+
+    it("second agent joins and game transitions to active", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const agent2 = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      const joinRes = await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      expect(joinRes.status).toBe(200);
+      expect(joinRes.body.player_slot).toBe("player_2");
+      expect(joinRes.body.status).toBe("active");
+
+      const stateRes = await request(app)
+        .get(`/games/${gameId}`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`);
+
+      expect(stateRes.body.status).toBe("active");
+      expect(stateRes.body.players).toHaveLength(2);
+      expect(stateRes.body.started_at).toBeTruthy();
+    });
+
+    it("rejects joining a game that is already active", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const agent2 = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      // agent2 fills the last slot, game becomes active
+      await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      // agent1 tries to join again — fails on status check (active), not duplicate check
+      const lateJoinRes = await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`);
+
+      expect(lateJoinRes.status).toBe(409);
+      expect(lateJoinRes.body.error.code).toBe("game_not_joinable");
+    });
+
+    it("rejects joining the same game twice", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 3 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      const res = await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("already_joined");
+    });
+
+    it("returns 404 for a non-existent game", async () => {
+      const { app } = buildTestApp();
+      const { apiKey } = await buildAgentWithKey(app, "valid-invite");
+
+      const res = await request(app)
+        .get("/games/gam_000000000000")
+        .set("Authorization", `Bearer ${apiKey}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("game_not_found");
+    });
+  });
+
   it("rotates an agent key and invalidates the old key", async () => {
     const { app } = buildTestApp();
 
