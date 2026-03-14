@@ -42,6 +42,7 @@ export function createDatabase(databasePath: string, inviteCodes: string[]) {
       id TEXT PRIMARY KEY,
       game_type TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'waiting',
+      revision INTEGER NOT NULL DEFAULT 0,
       settings_json TEXT NOT NULL,
       created_by TEXT NOT NULL REFERENCES agents(id),
       created_at TEXT NOT NULL,
@@ -55,7 +56,34 @@ export function createDatabase(databasePath: string, inviteCodes: string[]) {
       joined_at TEXT NOT NULL,
       PRIMARY KEY (game_id, agent_id)
     );
+
+    CREATE TABLE IF NOT EXISTS game_events (
+      id TEXT PRIMARY KEY,
+      game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      actor_agent_id TEXT REFERENCES agents(id),
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS moves (
+      id TEXT PRIMARY KEY,
+      game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL REFERENCES agents(id),
+      revision_seen INTEGER NOT NULL,
+      revision_applied INTEGER NOT NULL,
+      move_schema_version INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      params_json TEXT NOT NULL,
+      reasoning TEXT,
+      idempotency_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (game_id, agent_id, idempotency_key)
+    );
   `);
+
+  ensureGamesRevisionColumn(db);
 
   const insertInvite = db.prepare(`
     INSERT OR IGNORE INTO invite_codes (code_hash, single_use, used_by_agent_id, expires_at, created_at)
@@ -71,4 +99,14 @@ export function createDatabase(databasePath: string, inviteCodes: string[]) {
   }
 
   return db;
+}
+
+function ensureGamesRevisionColumn(db: Database.Database) {
+  const columns = db
+    .prepare("PRAGMA table_info(games)")
+    .all() as Array<{ name: string }>;
+
+  if (!columns.some((column) => column.name === "revision")) {
+    db.exec("ALTER TABLE games ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+  }
 }

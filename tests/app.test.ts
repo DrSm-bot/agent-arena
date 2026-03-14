@@ -6,7 +6,7 @@ const contexts: Array<{ close: () => void }> = [];
 
 afterEach(() => {
   while (contexts.length > 0) {
-    contexts.pop()!.close();
+    contexts.pop()?.close();
   }
 });
 
@@ -132,6 +132,7 @@ describe("Agent Arena API", () => {
       expect(stateRes.body.game_id).toBe(gameId);
       expect(stateRes.body.status).toBe("waiting");
       expect(stateRes.body.game_type).toBe("auction_house");
+      expect(stateRes.body.revision).toBe(0);
       expect(stateRes.body.players).toHaveLength(1);
       expect(stateRes.body.players[0].agent_id).toBe(agentId);
       expect(stateRes.body.players[0].player_slot).toBe("player_1");
@@ -162,6 +163,7 @@ describe("Agent Arena API", () => {
         .set("Authorization", `Bearer ${agent1.apiKey}`);
 
       expect(stateRes.body.status).toBe("active");
+      expect(stateRes.body.revision).toBe(1);
       expect(stateRes.body.players).toHaveLength(2);
       expect(stateRes.body.started_at).toBeTruthy();
     });
@@ -221,6 +223,180 @@ describe("Agent Arena API", () => {
 
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("game_not_found");
+    });
+
+    it("GET /games/:id/state returns an agent-facing projection", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const agent2 = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      const stateRes = await request(app)
+        .get(`/games/${gameId}/state`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      expect(stateRes.status).toBe(200);
+      expect(stateRes.body.game_id).toBe(gameId);
+      expect(stateRes.body.revision).toBe(1);
+      expect(stateRes.body.your_role).toBe("player_2");
+      expect(stateRes.body.public_state.players).toHaveLength(2);
+      expect(stateRes.body.valid_actions).toEqual(["submit_move"]);
+    });
+
+    it("rejects GET /games/:id/state for a non-participant", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const outsider = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const res = await request(app)
+        .get(`/games/${createRes.body.game_id as string}/state`)
+        .set("Authorization", `Bearer ${outsider.apiKey}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("not_in_game");
+    });
+
+    it("accepts a move with revision and idempotency handling", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const agent2 = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      const firstMove = await request(app)
+        .post(`/games/${gameId}/moves`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .set("Idempotency-Key", "move-1")
+        .send({
+          expected_revision: 1,
+          move_schema_version: 1,
+          action: "bid",
+          params: { amount: 200 },
+        });
+
+      expect(firstMove.status).toBe(202);
+      expect(firstMove.body.accepted).toBe(true);
+      expect(firstMove.body.applied_revision).toBe(2);
+      expect(firstMove.body.idempotent_replay).toBe(false);
+
+      const replayMove = await request(app)
+        .post(`/games/${gameId}/moves`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .set("Idempotency-Key", "move-1")
+        .send({
+          expected_revision: 1,
+          move_schema_version: 1,
+          action: "bid",
+          params: { amount: 200 },
+        });
+
+      expect(replayMove.status).toBe(200);
+      expect(replayMove.body.move_id).toBe(firstMove.body.move_id);
+      expect(replayMove.body.applied_revision).toBe(2);
+      expect(replayMove.body.idempotent_replay).toBe(true);
+
+      const stateRes = await request(app)
+        .get(`/games/${gameId}/state`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      expect(stateRes.body.revision).toBe(2);
+    });
+
+    it("rejects stale move revisions predictably", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const agent2 = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      await request(app)
+        .post(`/games/${gameId}/moves`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .set("Idempotency-Key", "move-1")
+        .send({
+          expected_revision: 1,
+          move_schema_version: 1,
+          action: "bid",
+          params: { amount: 200 },
+        });
+
+      const staleMove = await request(app)
+        .post(`/games/${gameId}/moves`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`)
+        .set("Idempotency-Key", "move-2")
+        .send({
+          expected_revision: 1,
+          move_schema_version: 1,
+          action: "pass",
+          params: {},
+        });
+
+      expect(staleMove.status).toBe(409);
+      expect(staleMove.body.error.code).toBe("revision_mismatch");
+      expect(staleMove.body.error.details.current_revision).toBe(2);
+    });
+
+    it("requires Idempotency-Key for move submission", async () => {
+      const { app } = buildTestApp();
+      const agent1 = await buildAgentWithKey(app, "valid-invite");
+      const agent2 = await buildAgentWithKey(app, "valid-invite-2");
+
+      const createRes = await request(app)
+        .post("/games")
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({ game_type: "auction_house", settings: { max_players: 2 } });
+
+      const gameId = createRes.body.game_id as string;
+
+      await request(app)
+        .post(`/games/${gameId}/join`)
+        .set("Authorization", `Bearer ${agent2.apiKey}`);
+
+      const res = await request(app)
+        .post(`/games/${gameId}/moves`)
+        .set("Authorization", `Bearer ${agent1.apiKey}`)
+        .send({
+          expected_revision: 1,
+          move_schema_version: 1,
+          action: "bid",
+          params: { amount: 200 },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("missing_idempotency_key");
     });
   });
 
