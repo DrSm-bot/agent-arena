@@ -37,6 +37,24 @@ export function createDatabase(databasePath: string, inviteCodes: string[]) {
       expires_at TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS games (
+      id TEXT PRIMARY KEY,
+      game_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'waiting',
+      settings_json TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES agents(id),
+      created_at TEXT NOT NULL,
+      started_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS game_players (
+      game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL REFERENCES agents(id),
+      player_slot TEXT NOT NULL,
+      joined_at TEXT NOT NULL,
+      PRIMARY KEY (game_id, agent_id)
+    );
   `);
 
   const insertInvite = db.prepare(`
